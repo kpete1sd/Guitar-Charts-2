@@ -696,25 +696,50 @@ def _fit_font(song: Song, font_size: float, usable_pt: float) -> float:
 
 # row heights in units of font size: (chord row, lyric row)
 _PDF_UNITS = {"lyric": (1.2, 1.25), "plain": (0, 1.35), "chords": (1.35, 0), "tab": (0, 1.15), "blank": (0.7, 0)}
+_LINK_BLOCK_PT = 34  # vertical space reserved for the YouTube link line
 
 
-def render_pdf(song: Song, font_size: float = 14, one_page: bool = False) -> bytes:
-    """one_page=True shrinks the font (down to 6pt) so the whole song fits on a single page."""
+def normalize_url(url: str) -> str:
+    u = (url or "").strip()
+    if u and not re.match(r"^https?://", u, re.I):
+        u = "https://" + u
+    return u
+
+
+def is_youtube_url(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    host = (urlparse(normalize_url(url)).hostname or "").lower()
+    return host == "youtu.be" or host == "youtube.com" or host.endswith(".youtube.com")
+
+
+def youtube_link_for(song: Song, url: str = ""):
+    """-> (link_url, is_search). Uses the given video URL, else a YouTube search for the song."""
+    from urllib.parse import quote_plus
+
+    u = normalize_url(url)
+    if u:
+        return u, False
+    q = " ".join(x for x in (song.title, song.artist) if x).strip()
+    if not q:
+        return "", False
+    return "https://www.youtube.com/results?search_query=" + quote_plus(q), True
+
+
+def _draw_song(c, song: Song, font_size: float, one_page: bool, youtube_url: str):
     from reportlab.lib.colors import Color
     from reportlab.lib.pagesizes import letter
     from reportlab.lib.units import inch
-    from reportlab.pdfgen import canvas
+    from reportlab.pdfbase.pdfmetrics import stringWidth
 
     W, H = letter
     M = 0.75 * inch
     top, bottom = H - 0.7 * inch, 0.8 * inch
-    buf = io.BytesIO()
-    c = canvas.Canvas(buf, pagesize=letter)
-    c.setTitle(song.title or "Chart")
-    c.setAuthor(song.artist or "")
+    link_url, is_search = youtube_link_for(song, youtube_url)
     fs = _fit_font(song, font_size, W - 2 * M)
     if one_page:
         fixed = 30 + (18 if song.artist else 0) + (16 if meta_line(song) else 0) + 8
+        fixed += _LINK_BLOCK_PT if link_url else 0
         units = sum(
             (2.3 if sec.name else 0) + sum(sum(_PDF_UNITS[k]) for k, _, _ in rows_of(sec))
             for sec in song.sections
@@ -791,9 +816,54 @@ def render_pdf(song: Song, font_size: float = 14, one_page: bool = False) -> byt
                 c.setFillColor(Color(0, 0, 0))
                 c.drawString(M, y - h1 - fs, _pdf_clean(ly))
             st["y"] -= h1 + h2
+
+    # Clickable YouTube link after the end of the chart
+    if link_url:
+        need(_LINK_BLOCK_PT)
+        lfs = 11
+        what = " - ".join(x for x in (song.title, song.artist) if x)
+        prefix = "Search YouTube: " if is_search else "Watch on YouTube: "
+        label = _pdf_clean(prefix + what)
+        while stringWidth(label, "Helvetica", lfs) > W - 2 * M and len(label) > len(prefix) + 4:
+            label = label[: -4] + "..."
+        y = st["y"] - 14
+        c.setFont("Helvetica", lfs)
+        c.setFillColor(blue)
+        c.drawString(M, y - lfs, label)
+        tw = stringWidth(label, "Helvetica", lfs)
+        c.setStrokeColor(blue)
+        c.setLineWidth(0.6)
+        c.line(M, y - lfs - 1.5, M + tw, y - lfs - 1.5)
+        c.linkURL(link_url, (M, y - lfs - 3, M + tw, y + 2), relative=0, thickness=0)
+        st["y"] = y - lfs - 6
     footer()
+    c.showPage()
+
+
+def render_pdf_many(items, font_size: float = 14, one_page: bool = False) -> bytes:
+    """items: [(Song, youtube_url)]. Each song starts on a new page, with its own page numbers."""
+    from reportlab.lib.pagesizes import letter
+    from reportlab.pdfgen import canvas
+
+    buf = io.BytesIO()
+    c = canvas.Canvas(buf, pagesize=letter)
+    if len(items) == 1:
+        c.setTitle(items[0][0].title or "Chart")
+        c.setAuthor(items[0][0].artist or "")
+    else:
+        c.setTitle("Song charts")
+    for song, url in items:
+        _draw_song(c, song, font_size, one_page, url)
     c.save()
     return buf.getvalue()
+
+
+def render_pdf(song: Song, font_size: float = 14, one_page: bool = False, youtube_url: str = "") -> bytes:
+    """one_page=True shrinks the font (down to 6pt) so the whole song fits on a single page.
+
+    A clickable YouTube link is added after the chart: youtube_url if given, otherwise a
+    YouTube search for the song's title and artist."""
+    return render_pdf_many([(song, youtube_url)], font_size, one_page)
 
 
 # --------------------------------------------------------------------------- #
