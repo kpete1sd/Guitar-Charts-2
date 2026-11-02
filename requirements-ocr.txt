@@ -1,0 +1,4 @@
+# Optional: lets the app read scanned / photographed PDFs (pure pip, no system install needed).
+# Works on Python 3.13+. (On Python 3.9-3.12 the older "rapidocr-onnxruntime" package also works.)
+rapidocr
+onnxruntime
